@@ -1,0 +1,95 @@
+#####################################################################################
+# name: dnspoison                                                                   #
+# author: Mankirat Gulati                                                           #
+# version: 1.0                                                                      #
+# description: A DNS spoofer that forges DNS responses to poison a victim's cache.  #                                              
+#####################################################################################
+
+----------------------------------------------
+Setup Instructions:
+----------------------------------------------
+1. Give executable permissions to 'setup.sh'.
+
+    chmod u+x setup.sh
+
+2. Run 'setup.sh'.
+
+    source setup.sh
+
+
+----------------------------------------------
+Running the program:
+----------------------------------------------
+1. Running the below command will give you insight on all the 
+   informtion and features about the program.
+
+    python3 dnspoison.py --help
+
+    *** Example: The following command listens on interface 'eth0', 
+            with a filter of 'udp port 53' and hijacks hostnames 
+            listed in a file, 'hostnames.txt'.
+
+        python3 dnspoison.py -i eth0 -f hostnames.txt "udp port 53" 
+
+2. Program Details
+
+    *** The file format for hostnames is the IP address followed 
+        by whitespace and then the hostname:
+
+        1.2.3.4         weibo.com
+        0.0.0.0         www.aircrack-ng.org
+        168.192.13.170  mikeygulati.me
+    
+    *** Sometimes, DNS spoofing does not always work because the
+        DNS server is too fast and returns the real response before
+        the spoofed response. Testing this program with the hostnames 
+        listed in the above section seem to be spoofed reliably with
+        the default DNS server. Other hostnames however, like 'apple.com'
+        only get spoofed with a slow DNS server like: 185.121.177.53
+
+        To change the DNS server:
+
+            1. nano /etc/resolv.conf
+        
+            2. Comment out the line that looks like "nameserver <default_dns_server>".
+
+            3. Add "nameserver 185.121.177.53" below the commented out line.
+
+            4. Close and save the file.
+    
+    *** If you do not specify a filter, the default will be "udp dst port 53".
+
+----------------------------------------------
+Example Test Run:
+----------------------------------------------
+1. Create a file called 'hostnames' with the following:
+
+    1.2.3.4  weibo.com
+    5.5.5.5  www.aircrack-ng.org
+    0.0.0.0  mikeygulati.me
+
+2. Run 'python3 dnspoison.py -f hostnames'
+3. Run 'dig mikeygulati.me +short' in a
+   second terminal.
+4. Run 'dig www.aircrack-ng.org' in the same second terminal.
+
+5. The following output is:
+
+    Terminal #1:
+    ---------------
+        root@kali:~/Documents/cse363/hw2# python3 dnspoison.py -f hostnames
+        Listening on default interface, 'eth0'... (hostnames='hostnames', filter='udp dst port 53')
+
+    Terminal #2
+    ---------------
+        root@kali:~/Documents/cse363/hw2# dig mikeygulati.me +short
+        0.0.0.0
+        root@kali:~/Documents/cse363/hw2# dig www.aircrack-ng.org +short
+        5.5.5.5
+
+6. You can see the attack worked because:
+
+    - The actual IP of 'mikeygulati.me' was replaced with '0.0.0.0'.
+    - The actual IP of 'www.aircrack-ng.org' was replaced with '5.5.5.5'.
+
+

